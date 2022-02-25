@@ -2,12 +2,12 @@ use hyper::{
     body::Buf,
     client::{Client as HyperClient, HttpConnector},
 };
+
 #[cfg(feature = "with-openssl")]
 use hyper_openssl::HttpsConnector;
+
 #[cfg(feature = "with-hypertls")]
 use hyper_tls::HttpsConnector;
-use serde;
-use serde_json;
 
 use std::collections::btree_map::Range;
 use std::collections::BTreeMap;
@@ -17,7 +17,7 @@ use std::ops::{
 };
 use std::time::{Duration, Instant};
 
-use crate::error::Error;
+use crate::error::{self, Error};
 use crate::token::IdInfo;
 
 pub struct Client {
@@ -43,7 +43,7 @@ struct Cert {
 
 type Key = String;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CachedCerts {
     keys: BTreeMap<Key, Cert>,
     pub expiry: Option<Instant>,
@@ -58,7 +58,7 @@ impl CachedCerts {
     }
 
     fn certs_url() -> &'static str {
-        "https://www.googleapis.com/oauth2/v2/certs"
+        "https://www.googleapis.com/oauth2/v3/certs"
     }
 
     fn get_range<'a>(&'a self, kid: &Option<String>) -> Result<Range<'a, Key, Cert>, Error> {
@@ -104,16 +104,28 @@ impl CachedCerts {
     }
 }
 
+impl Default for CachedCerts {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for Client {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Client {
     pub fn new() -> Client {
         #[cfg(feature = "with-hypertls")]
         let ssl = HttpsConnector::new();
+
         #[cfg(feature = "with-openssl")]
         let ssl = HttpsConnector::new().expect("unable to build HttpsConnector");
-        let client = HyperClient::builder()
-            .http2_max_frame_size(0x2000)
-            .pool_max_idle_per_host(0)
-            .build(ssl);
+
+        let client = HyperClient::builder().build::<_, hyper::Body>(ssl);
+
         Client {
             client,
             audiences: vec![],
@@ -130,7 +142,7 @@ impl Client {
         id_token: &str,
         cached_certs: &CachedCerts,
     ) -> Result<IdInfo, Error> {
-        let unverified_header = jsonwebtoken::decode_header(&id_token)?;
+        let unverified_header = jsonwebtoken::decode_header(id_token)?;
 
         use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 
@@ -140,14 +152,17 @@ impl Client {
             let mut validation = Validation::new(Algorithm::RS256);
             validation.set_audience(&self.audiences);
             let token_data = jsonwebtoken::decode::<IdInfo>(
-                &id_token,
+                id_token,
                 &DecodingKey::from_rsa_components(&cert.n, &cert.e),
                 &validation,
             )?;
 
-            token_data.claims.verify(self)?;
+            let x = token_data.claims.verify(self);
 
-            return Ok(token_data.claims);
+            // if let Ok(()) = token_data.claims.verify(self) {
+            if let Ok(()) = x {
+                return Ok(token_data.claims);
+            };
         }
 
         Err(Error::InvalidToken)
@@ -181,7 +196,11 @@ impl Client {
         cache: &mut Option<Instant>,
     ) -> Result<T, Error> {
         let url = url.parse().unwrap();
-        let response = self.client.get(url).await.unwrap();
+
+        let response = match self.client.get(url).await {
+            Ok(x) => x,
+            Err(e) => return Err(error::Error::ConnectionError(Box::new(e))),
+        };
 
         let status = response.status().as_u16();
         match status {

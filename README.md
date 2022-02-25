@@ -1,8 +1,6 @@
 Google Sign-In for Rust
 =======================
-
-[![google-signin on crates.io](https://img.shields.io/crates/v/google-signin.svg)](https://crates.io/crates/google-signin)
-[![google-signin on docs.rs](https://docs.rs/google-signin/badge.svg)](https://docs.rs/google-signin)
+*The crates.io version is old, and I'm not sure why it hasn't been updated.*
 
 Rust API bindings for Google Sign-in.  
 See [authenticating with a backend server](https://developers.google.com/identity/sign-in/web/backend-auth).
@@ -12,13 +10,7 @@ Put this in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-google-signin = "0.3.0"
-```
-
-And this in your crate root:
-
-```rust
-extern crate google_signin;
+google-signin = { git = "https://github.com/abhizer/google-signin-rs" }
 ```
 
 And then you can verify a google JSON web token
@@ -26,26 +18,23 @@ And then you can verify a google JSON web token
 ```rust
 use google_signin;
 let mut client = google_signin::Client::new();
+let mut cached_certs = google_signin::CachedCerts::new(); 
 client.audiences.push(YOUR_CLIENT_ID); // required
 client.hosted_domains.push(YOUR_HOSTED_DOMAIN); // optional
 
-// Let the crate handle everything for you
-let id_info = client.verify(&data.token).expect("Expected token to be valid");
-println!("Success! Signed-in as {}", id_info.sub);
+let token = TOKEN_TO_VERIFY; 
 
-// Inspect the ID before verifying it
-let id_info = client.get_slow_unverified(&data.token).expect("Expected token to exist");
-let ok = id_info.verify(&client).is_ok();
-println!("Ok: {}, Info: {:?}", ok, id_info);
+// Refresh the cached certs if required
+match cached_certs.refresh_if_needed().await {
+    Err(e) => eprintln!("{e:?}"), 
+    Ok(x) => println!("Were cached certs refreshed? {x:?}"); 
+};
+
+let x = client.verify(token, &cached_certs).await.unwrap(); 
+
+eprintln!("{x:?}"); 
 ```
 
-## Other Notes
-The `verify` function currently uses the
-[tokeninfo endpoint](https://developers.google.com/identity/sign-in/web/backend-auth#calling-the-tokeninfo-endpoint)
-which handles most of the validation logic, but introduces some latency.
+Certs are only fetched if they've expired and the token is verified locally. 
 
-If you are expecting high volumes of sign-ins:
- * Add a reaction to the
-[Handle Certificate and Cache-Control auth flow](https://github.com/wyyerd/google-signin-rs/issues/2)
-issue so we know how many people need it.
- * OR, Submit a Pull Request for the issue to help out.
+*This wasn't working for me with HTTP2 so I stopped using it and got it working for me.*
